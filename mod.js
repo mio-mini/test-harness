@@ -11,6 +11,8 @@ const filename = () => {
   }
 };
 
+const isError = (e) => e === Error || e.prototype instanceof Error;
+
 const suite = {
   tests: new Map(),
   totalCount: 0,
@@ -49,7 +51,7 @@ const suite = {
         }%c | ${passed} passed | ${failed} failed | %c(${time} ms)`,
         failed ? "color:red" : "color:green",
         "color:black",
-        "color:gray"
+        "color:gray",
       );
     }
   },
@@ -62,12 +64,21 @@ export const test = isDeno
   : async function test(name, fn) {
       const testFile = suite.set();
 
+      let ignore = false;
+
+      if (typeof name === "object") {
+        const config = name;
+        ({ name, fn, ignore } = config);
+      }
+
       let time = Date.now();
       let errors = [],
         assertions = [];
 
       try {
-        await fn();
+        if (!ignore) {
+          await fn();
+        }
       } catch (e) {
         if (e instanceof AssertionError) {
           assertions.push(e.message);
@@ -81,7 +92,7 @@ export const test = isDeno
       if (current.failed + current.passed === 0) {
         console.log(
           `%crunning ${current.count} tests from ${testFile}`,
-          "color:gray"
+          "color:gray",
         );
       }
 
@@ -92,17 +103,26 @@ export const test = isDeno
         console.info(
           `${name} ... %cFAILED %c(${time} ms)`,
           "color:red",
-          "color:gray"
+          "color:gray",
         );
-        assertions.forEach(msg => console.assert(false, msg));
-        errors.forEach(msg => console.assert(false, msg));
+        assertions.forEach((msg) => console.assert(false, msg));
+        errors.forEach((msg) => console.assert(false, msg));
       } else {
         current.passed++;
-        console.info(
-          `${name} ... %cok %c(${time} ms)`,
-          "color:green",
-          "color:gray"
-        );
+
+        if (ignore) {
+          console.info(
+            `${name} ... %cignored %c(${time} ms)`,
+            "color:darkorange",
+            "color:gray",
+          );
+        } else {
+          console.info(
+            `${name} ... %cok %c(${time} ms)`,
+            "color:green",
+            "color:gray",
+          );
+        }
       }
 
       suite.done(current);
@@ -110,35 +130,81 @@ export const test = isDeno
 
 export const assert = isDeno
   ? await import("https://deno.land/std@0.210.0/assert/mod.ts").then(
-      ({ assert, assertEquals, assertRejects }) => ({
+      ({ assert, assertEquals, assertRejects, assertThrows }) => ({
         ok: assert,
         equal: assertEquals,
         reject: assertRejects,
-      })
+        throws: assertThrows,
+      }),
     )
   : {
       ok(value, message) {
         if (!value) {
-          throw new AssertionError(`Expected ${value} `);
+          throw new AssertionError(message ?? `Expected ${value} to be true`);
         }
       },
       equal(a, b, message) {
         if (a !== b) {
-          throw new AssertionError(`Left: ${a}, Right: ${b} `);
+          throw new AssertionError(
+            `Values are not equals: ${message ? message + ": " : ""}Expected: ${a}, Found: ${b} `,
+          );
         }
       },
-      async reject(fn) {
+      async reject(fn, error, message) {
+        if (typeof error === "string" && typeof message === "undefined") {
+          message = error;
+        }
+
+        message = message ? `: ${message}.` : ".";
         try {
           await fn();
-          throw new AssertionError("Should have failed");
+          throw new AssertionError("Expected function to throw" + message);
         } catch (e) {
           if (e instanceof AssertionError) {
             throw e;
+          }
+
+          if (isError(error) && !(e instanceof error)) {
+            throw new AssertionError(
+              `Expected error to be instance of ${error.name}, but was ${e.constructor.name}` +
+                message,
+            );
+          }
+        }
+      },
+      throws(fn, error, messageIncludes, message) {
+        if (typeof error === "string" && arguments.length === 2) {
+          message = error;
+        }
+
+        message = message ? `: ${message}.` : "";
+        try {
+          fn();
+          throw new AssertionError("Expected function to throw" + message);
+        } catch (e) {
+          if (e instanceof AssertionError) {
+            throw e;
+          }
+
+          if (isError(error) && !(e instanceof error)) {
+            throw new AssertionError(
+              `Expected error to be instance of "${error.name}", but was "${e.constructor.name}"` +
+                message,
+            );
+          } else if (
+            isError(error) &&
+            typeof messageIncludes === "string" &&
+            !e.message.includes(messageIncludes)
+          ) {
+            throw new AssertionError(
+              `Expected error message to include "${messageIncludes}", but got "${e.message}"` +
+                message,
+            );
           }
         }
       },
     };
 
 if (isDeno) {
-  globalThis.addEventListener("unhandledrejection", e => e.preventDefault());
+  globalThis.addEventListener("unhandledrejection", (e) => e.preventDefault());
 }
